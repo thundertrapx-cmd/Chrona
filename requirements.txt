@@ -1,0 +1,10 @@
+streamlit
+pandas
+plotly
+requests
+numpy
+textblob
+scikit-learn
+supabase
+google-generativeai
+yfinance
