@@ -115,7 +115,7 @@ if st.session_state.user is None:
     st.stop()
 
 # ─────────────────────────────────────────────
-# CUSTOM CSS — Dark terminal-finance aesthetic
+# CUSTOM CSS
 # ─────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -234,14 +234,6 @@ def analyze_sentiment(text):
     elif polarity < 0: return "Bearish 📉", polarity
     else: return "Neutral 🤝", polarity
 
-def prepare_features(hist):
-    hist = hist.copy()
-    hist["Target"] = (hist["Close"].shift(-1) > hist["Close"]).astype(int)
-    hist = hist.dropna()
-    features = hist[["RSI", "SMA_20", "SMA_50", "MACD", "RVOL", "Momentum_Strength"]]
-    target = hist["Target"]
-    return features, target
-
 def enrich_hist(raw):
     if raw.empty: return raw
     h = raw.copy()
@@ -273,7 +265,7 @@ def enrich_hist(raw):
 # DATA LOADERS 
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=900)
-def load_stock_twelve(t, period):
+def load_stock_twelve(t, period="6mo"):
     symbol_td = t.upper().strip().replace("-", "/")
     interval = "1day"
     output_size = 260 if period == "1y" else (130 if period == "6mo" else (70 if period == "3mo" else 30))
@@ -377,18 +369,19 @@ def get_cached_price(symbol):
     return {}
 
 # ─────────────────────────────────────────────
-# 🤖 JAVIS AI AGENT CORE LOGIC
+# 🤖 UPGRADED JAVIS AI AGENT (LAYER 2 & 3 INTEGRATED)
 # ─────────────────────────────────────────────
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-def get_stock_realtime_data(ticker_input):
+def get_stock_realtime_data(ticker_input: str) -> dict:
+    """ดึงข้อมูลราคาหุ้นปัจจุบันแบบ Real-time"""
     symbol = ticker_input.upper().strip()
     try:
         symbol_td = symbol.replace("-", "/")
         url = f"https://api.twelvedata.com/price?symbol={symbol_td}&apikey={TWELVE_DATA_API_KEY}"
         res = requests.get(url, timeout=4).json()
         if "price" in res:
-            return {"symbol": symbol_td, "current_price": float(res["price"]), "market_status": "ดึงข้อมูลสำเร็จผ่าน Twelve Data"}
+            return {"symbol": symbol_td, "current_price": float(res["price"]), "market_status": "Success via Twelve Data"}
     except:
         pass
     try:
@@ -396,39 +389,90 @@ def get_stock_realtime_data(ticker_input):
         ticker_data = yf.Ticker(symbol_yf)
         latest_data = ticker_data.history(period="1d")
         if not latest_data.empty:
-            return {"symbol": symbol_yf, "current_price": float(latest_data["Close"].iloc[-1]), "market_status": "ดึงข้อมูลสำเร็จผ่าน Yahoo Finance"}
+            return {"symbol": symbol_yf, "current_price": float(latest_data["Close"].iloc[-1]), "market_status": "Success via Yahoo Finance"}
     except Exception as ex:
-        return f"ระบบไม่สามารถดึงข้อมูลของ {ticker_input} ได้: {str(ex)}"
-    return f"ไม่พบข้อมูลราคาล่าสุดของ {ticker_input}"
+        return {"error": f"Failed to fetch {ticker_input}: {str(ex)}"}
+    return {"error": f"No recent price data found for {ticker_input}"}
 
-def get_my_portfolio_data():
+def get_my_portfolio_data() -> dict:
+    """ดึงข้อมูลพอร์ตโฟลิโอปัจจุบันของผู้ใช้งานจากฐานข้อมูลเพื่อใช้วิเคราะห์"""
     df_p = load_user_portfolio()
     if df_p.empty:
-        return "พอร์ตโฟลิโอปัจจุบันว่างเปล่า ไม่มีข้อมูลหุ้นที่บันทึกไว้"
-    return df_p[["ticker", "qty", "avg_cost"]].to_dict(orient="records")
+        return {"message": "Portfolio is currently empty. No saved stocks."}
+    return {"portfolio": df_p[["ticker", "qty", "avg_cost"]].to_dict(orient="records")}
 
-def run_javis_agent(user_query):
+def get_stock_technical_and_quant_metrics(ticker_input: str) -> dict:
+    """ใช้ดึงข้อมูลเทคนิคอล (RSI, Volatility, Momentum) และสัญญาณเชิงปริมาณ (Quant Signals) เพื่อประกอบการตัดสินใจทางสถิติ"""
+    try:
+        hist_data = load_stock_twelve(ticker_input, "6mo")
+        if hist_data.empty: 
+            return {"error": f"No technical data available for {ticker_input}"}
+        
+        rsi = hist_data['RSI'].iloc[-1]
+        rvol = hist_data['RVOL'].iloc[-1]
+        volatility = calculate_volatility(hist_data)
+        recommendation = get_recommendation(calculate_score(hist_data))
+        
+        return {
+            "ticker": ticker_input,
+            "rsi_14": round(rsi, 2),
+            "relative_volume": round(rvol, 2),
+            "historical_volatility_pct": volatility,
+            "ai_quant_signal": recommendation
+        }
+    except Exception as e:
+        return {"error": f"Failed to fetch Quant metrics: {str(e)}"}
+
+def get_stock_financial_fundamentals(ticker_input: str) -> dict:
+    """ใช้ดึงข้อมูลงบการเงินและอัตราส่วนประเมินมูลค่า (P/E, Market Cap, Revenue, ROE) ของบริษัทเพื่อค้นหาหุ้น Undervalued"""
+    return load_fundamentals_twelve(ticker_input)
+
+def run_javis_agent(user_query: str) -> str:
     if not GEMINI_API_KEY:
         return "❌ กรุณาตั้งค่า GEMINI_API_KEY ใน secrets.toml ก่อนใช้งาน"
         
     clean_key = str(GEMINI_API_KEY).strip().replace('"', '').replace("'", "")
     genai.configure(api_key=clean_key)
     
-    system_context = """
-คุณคือ Javis AI ของ Chrona เป็นผู้ช่วยด้าน: Stock Analysis, Quantitative Finance, Portfolio Analysis
-ตอบภาษาไทยเสมอ ใช้ Bullet Points สรุปท้ายทุกครั้ง ห้ามการันตีกำไร และอธิบายความเสี่ยงเสมอ
-หากผู้ใช้ถามเรื่องพอร์ต ให้เรียกใช้ get_my_portfolio_data()
-หากผู้ใช้ถามเรื่องหุ้น ให้เรียกใช้ get_stock_realtime_data()
+    # 📌 System Prompt อัปเกรดกระบวนการคิดของ Agent ให้มีความเป็นนักวิเคราะห์ระบบ Quant
+    system_context = f"""
+คุณคือ Javis (Chrona AI Brain) ผู้ช่วยวิเคราะห์หุ้นเชิงปริมาณและการลงทุนสำหรับผู้ใช้งาน {st.session_state.user.email}
+
+กฏการวิเคราะห์และการตอบคำถาม:
+- หากผู้ใช้ถามถึงพอร์ตภาพรวม หรือหุ้นหลายตัวพร้อมกัน ห้ามเรียกใช้ Tool ซ้ำซ้อนเด็ดขาด 
+- ให้เลือกวิเคราะห์หุ้นตัวที่อันตรายที่สุด (เช่น RSI เกิน หรือ Volatility สูงสุด) มาตอบเพียง 1-2 ตัวเท่านั้น เพื่อประหยัด API Quota
+
+หน้าที่ของคุณคือเป็น Orchestrator ที่เลือกใช้เครื่องมือ (Tools) อย่างชาญฉลาด:
+1. หากผู้ใช้ถามเรื่องพอร์ต ให้เรียกใช้ `get_my_portfolio_data`
+2. หากผู้ใช้ต้องการอัปเดตราคาด่วน ให้ใช้ `get_stock_realtime_data`
+3. หากผู้ใช้ถามเจาะลึกด้านสถิติเทคนิคอล/โมเมนตัม ให้เรียกใช้ `get_stock_technical_and_quant_metrics` 
+4. หากผู้ใช้ถามหางบการเงิน หรือประเมินมูลค่า ให้ใช้ `get_stock_financial_fundamentals`
+
+กฏการวิเคราะห์และการตอบคำถาม:
+- ตอบเป็นภาษาไทยที่กระชับ ตรงประเด็น
+- วิเคราะห์ด้วยความแม่นยำทางคณิตศาสตร์ เสมือนระบบเทรดอัตโนมัติ (ให้ความสำคัญกับความสม่ำเสมอ, ใช้ Entry Threshold ที่ความมั่นใจระดับ 0.65 ขึ้นไปในการมองหาจังหวะที่ได้เปรียบทางสถิติ, ควบคุมความเสี่ยงเสมอ)
+- ห้ามการันตีกำไรหรือผลตอบแทนอย่างเด็ดขาด แจ้งความเสี่ยงเสมอ
+- สรุปเนื้อหาท้ายคำตอบด้วย Bullet Points ให้เข้าใจง่ายทุกครั้ง
 """
     if "javis_chat_session" not in st.session_state:
-        model = genai.GenerativeModel(model_name='gemini-flash-latest', system_instruction=system_context, tools=[get_stock_realtime_data, get_my_portfolio_data])
+        # ผูกรวมเครื่องมือทั้ง 4 เข้ากับ Gemini Flash เพื่อทำงานแบบ Agent
+        model = genai.GenerativeModel(
+            model_name='gemini-3.1-flash-lite', 
+            system_instruction=system_context, 
+            tools=[
+                get_stock_realtime_data, 
+                get_my_portfolio_data,
+                get_stock_technical_and_quant_metrics,
+                get_stock_financial_fundamentals
+            ]
+        )
         st.session_state.javis_chat_session = model.start_chat(history=[], enable_automatic_function_calling=True)
         
     try:
         response = st.session_state.javis_chat_session.send_message(user_query)
         return response.text
     except Exception as e:
-        return f"❌ Javis เกิดข้อผิดพลาด: {str(e)}"
+        return f"❌ Javis เกิดข้อผิดพลาดในระบบประมวลผล: {str(e)}"
 
 # ─────────────────────────────────────────────
 # SIDEBAR CONTROL
@@ -451,7 +495,6 @@ with st.sidebar:
         if target_col.button(f"▫️ {symbol}", key=f"btn_{symbol}", use_container_width=True):
             st.session_state.ticker = symbol
 
-    # 🟢 เพิ่ม Tooltip ให้ส่วนตั้งค่า
     ticker = st.text_input("Stock Ticker", value=st.session_state.ticker, help="💡 พิมพ์ชื่อย่อหุ้นต่างประเทศ หรือคริปโต (เช่น TSLA, GOOGL, BTC/USD)").upper()
     st.session_state.ticker = ticker
     
@@ -492,7 +535,6 @@ st.markdown("## 🔎 ค้นหาและจัดการหุ้น")
 col_search, col_add_port, col_add_list = st.columns([2, 1, 1])
 
 with col_search:
-    # 🟢 เพิ่ม Tooltip แบบละเอียดยิบในช่องค้นหาหลัก
     new_ticker = st.text_input(
         "ระบุชื่อหุ้นหรือคริปโต (เช่น AAPL, NVDA, BTC/USD)", 
         value=st.session_state.ticker,
@@ -575,11 +617,11 @@ if st.session_state.last_reset_date != date.today():
     st.session_state.last_reset_date = date.today()
     
 with st.expander("💬 TALK TO JAVIS AI CO-PILOT", expanded=False):
-    st.caption("🤖 Powered by Chrona — ถามราคาหุ้น หรือวิเคราะห์พอร์ตโฟลิโอของคุณต่อเนื่องสดๆ จาก Supabase ได้ทันที")
+    st.caption("🤖 Powered by Chrona AI Brain — เจาะลึกหุ้นด้วยข้อมูลพื้นฐานและเทคนิคอลโดยอัตโนมัติ")
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.write(msg["text"])
-    if user_input := st.chat_input("คุยกับ Javis..."):
+    if user_input := st.chat_input("คุยกับ Javis เช่น 'งบการเงินของ NVDA ตอนนี้น่าสนใจไหม?'"):
         with st.chat_message("user"):
             st.write(user_input)
         st.session_state.messages.append({"role": "user", "text": user_input})
@@ -587,7 +629,7 @@ with st.expander("💬 TALK TO JAVIS AI CO-PILOT", expanded=False):
             if st.session_state.daily_ai_count >= 10:
                 response_text = "🚫 **Daily Limit Reached**\n\nคุณใช้ Javis ครบ 10 ครั้งแล้วในวันนี้ โปรดลองใหม่ในวันพรุ่งนี้"
             else:
-                with st.spinner("Javis กำลังวิเคราะห์ข้อมูล..."):
+                with st.spinner("Javis กำลังรวบรวมข้อมูลและวิเคราะห์ทางสถิติ..."):
                     try:
                         response_text = run_javis_agent(user_input)
                         st.session_state.daily_ai_count += 1
@@ -608,7 +650,6 @@ with tab1:
     if hist.empty:
         st.warning("ไม่มีข้อมูลประวัติราคาสำหรับหุ้นตัวนี้ในการสร้างกราฟ")
     else:
-        # 🟢 ใช้ Tooltip ที่ Subheader เพื่อบอกความหมายกราฟ
         st.subheader("📊 Advanced Quant Candlestick Chart", help="กราฟแท่งเทียนแสดงการเคลื่อนไหวของราคา พร้อมเส้นค่าเฉลี่ย SMA และกรอบความผันผวน Bollinger Bands")
         
         fig = go.Figure()
@@ -631,7 +672,6 @@ with tab1:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # 🟢 เพิ่ม st.popover สำหรับคำอธิบายดัชนีทางเทคนิค (กดแล้วเด้งหน้าต่างสวยๆ)
         col_title1, col_pop1 = st.columns([5, 1])
         with col_title1:
             st.subheader("📐 Statistical Quant Metrics")
@@ -659,7 +699,6 @@ with tab1:
 
         st.markdown("<hr/>", unsafe_allow_html=True)
         
-        # 🟢 เพิ่ม Tooltip ให้ส่วนคำนวณความเสี่ยง
         st.subheader("🧮 Volatility-Based Position Sizing Calculator", help="ระบบจะประเมินความผันผวน (ATR) ณ วันนี้ เพื่อบอกว่าคุณควรซื้อหุ้นจำนวนกี่หุ้นถึงจะไม่เสี่ยงขาดทุนหนักเกินไป")
         
         calc_col1, calc_col2, calc_col3 = st.columns(3)
@@ -763,7 +802,7 @@ with tab3:
             pred_col3.metric("Market Long Baseline", f"{baseline_win_rate:.1f}%", "สัดส่วนวันเขียวในตลาด")
 
             st.markdown("<hr/>", unsafe_allow_html=True)
-            st.subheader("📉 Strategy Equity Curve Backtest", help="กราฟเปรียบเทียบว่าหากเราเทรดซื้อขายตามที่ AI บอกทุกวัน (เส้นสีเขียว) เทียบกับเราซื้อหุ้นเก็บไว้เฉยๆ ไม่ขายเลย (เส้นประ) แบบไหนกำไรเยอะกว่ากัน")
+            st.subheader("📉 Strategy Equity Curve Backtest", help="กราฟเปรียบเทียบว่าหากเราเทรดซื้อขายตามที่ AIบอกทุกวัน (เส้นสีเขียว) เทียบกับเราซื้อหุ้นเก็บไว้เฉยๆ ไม่ขายเลย (เส้นประ) แบบไหนกำไรเยอะกว่ากัน")
             
             with st.spinner("กำลังรันระบบ Backtest เชิงลึก..."):
                 def run_advanced_backtest(df_hist):
