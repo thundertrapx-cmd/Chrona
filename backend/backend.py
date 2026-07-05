@@ -35,9 +35,26 @@ app = FastAPI(title="Chrona API", version="3.0")
 # ── CORS ── ค่า default เป็น "*" (เหมือนเดิม ใช้ได้ทั้ง local dev)
 # ตอน deploy จริง แนะนำตั้ง env var ALLOWED_ORIGINS เป็นโดเมน frontend ตรงๆ
 # เช่น ALLOWED_ORIGINS=https://chrona.vercel.app
+#
+# ALLOWED_ORIGIN_REGEX (เพิ่มใหม่): แก้ปัญหา preflight ตอบ 400 ทุก endpoint
+# ที่เกิดจาก Vercel preview URL เปลี่ยน hash ทุกครั้งที่ deploy ใหม่ เช่น
+# chrona-3qdbfw8dx-thundertrapx-cmds-projects.vercel.app — ตั้งค่า default
+# ให้ match preview URL ทุกอันของ team/project นี้อัตโนมัติ ไม่ต้องไปตั้ง
+# ALLOWED_ORIGINS ใหม่บน Render ทุกครั้งที่ deploy
 _allowed_origins = os.getenv("ALLOWED_ORIGINS", "*")
 ALLOWED_ORIGINS = ["*"] if _allowed_origins == "*" else [o.strip() for o in _allowed_origins.split(",")]
-app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+ALLOWED_ORIGIN_REGEX = os.getenv(
+    "ALLOWED_ORIGIN_REGEX",
+    r"^https://.*-thundertrapx-cmds-projects\.vercel\.app$",
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── CONFIG ── อ่านจาก .env หรือ environment variable
 NEWS_API_KEY      = os.getenv("NEWS_API_KEY", "YOUR_NEWS_API_KEY")
